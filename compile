@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# === invariantes de repo ===
+SCRIPT_NAME="./compile"
+
+if [ ! -f "$SCRIPT_NAME" ]; then
+    echo "Error: este script debe ejecutarse desde la raiz del repo (./compile no encontrado)"
+    exit 1
+fi
+
+LEARN_DIR="./learn"
+EXAMPLES_DIR="./examples"
+BUILD_DIR="./build"
+OUT="$BUILD_DIR/main.prg"
+
+EXECUTE=0
+
+print_help() {
+    cat <<EOF
+Compilador de ejemplos ASM del repositorio.
+
+Utilidad:
+  - Compilar archivos desde learn/ o examples/
+  - Permitir ejecucion directa por path
+  - Resolver nombres parcialmente (modo flexible)
+
+Uso:
+  ./compile <name|path.asm> [flags]
+
+Modos:
+  1. Path literal:
+     ./compile ./foo.asm
+     ./compile examples/test.asm
+
+  2. Busqueda por nombre:
+     ./compile sprite
+     ./compile 01   (prefijo)
+
+Flags:
+  -h, --help        Muestra esta ayuda
+  -ls, --list       Lista archivos disponibles (superficial)
+  -x, -x64, --execute
+                    Ejecuta el binario resultante con x64
+
+Notas:
+  - La busqueda solo ocurre si el path literal no existe
+  - Si hay multiples coincidencias, falla (no ambigua)
+  - Output: $OUT
+
+EOF
+}
+
+list_files() {
+    echo "== examples/ =="
+    [ -d "$EXAMPLES_DIR" ] && find "$EXAMPLES_DIR" -maxdepth 2 -type f -name "*.asm" | sort || true
+
+    echo
+    echo "== learn/ =="
+    [ -d "$LEARN_DIR" ] && find "$LEARN_DIR" -maxdepth 2 -type f -name "*.asm" | sort || true
+}
+
+# === parse flags ===
+ARGS=()
+
+for arg in "$@"; do
+    case "$arg" in
+        "-h" | "--help" | "-help")
+            print_help
+            exit 0
+            ;;
+        "-ls" | "--list")
+            list_files
+            exit 0
+            ;;
+        "-x" | "-x64" | "--execute")
+            EXECUTE=1
+            ;;
+        *)
+            ARGS+=("$arg")
+            ;;
+    esac
+done
+
+if [ "${#ARGS[@]}" -eq 0 ]; then
+    print_help
+    exit 1
+fi
+
+QUERY="${ARGS[0]}"
+MATCHES=()
+
+# === 1. path literal (prioridad absoluta) ===
+if [ -f "$QUERY" ]; then
+    MATCHES+=("$QUERY")
+else
+    # === 2. busqueda heuristica ===
+    search_dirs=("$LEARN_DIR" "$EXAMPLES_DIR")
+
+    for dir in "${search_dirs[@]}"; do
+        [ -d "$dir" ] || continue
+
+        while IFS= read -r file; do
+            base=$(basename "$file")
+            name="${base%.asm}"
+
+            if [[ "$name" == *"$QUERY"* ]] || [[ "$name" =~ ^$QUERY ]]; then
+                MATCHES+=("$file")
+            fi
+        done < <(find "$dir" -type f -name "*.asm" | sort)
+    done
+fi
+
+COUNT=${#MATCHES[@]}
+
+if [ "$COUNT" -eq 0 ]; then
+    echo "No matches found for: $QUERY"
+    exit 1
+fi
+
+if [ "$COUNT" -gt 1 ]; then
+    echo "Ambiguous match. Multiple candidates:"
+    for m in "${MATCHES[@]}"; do
+        echo " - $(basename "$m")"
+    done
+    exit 1
+fi
+
+SRC="${MATCHES[0]}"
+
+mkdir -p "$BUILD_DIR"
+
+echo "Compiling: $SRC"
+
+xa -o "$OUT" "$SRC"
+
+echo "Build OK -> $OUT"
+
+if [ "$EXECUTE" -eq 1 ]; then
+    echo "Executing: x64 $OUT"
+    x64 "$OUT"
+else
+    echo "Execute: x64 $OUT"
+fi
